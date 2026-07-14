@@ -102,11 +102,38 @@ RDB_RELATIONS = SysFormat(
     ],
 )
 
-# RDB$RELATION_FIELDS: RDB$FIELD_NAME, RDB$RELATION_NAME, RDB$FIELD_SOURCE,
-#   RDB$FIELD_POSITION, RDB$FIELD_ID ...
-RDB_RELATION_FIELDS_OF_INTEREST = ["RDB$FIELD_NAME", "RDB$RELATION_NAME",
-                                   "RDB$FIELD_SOURCE", "RDB$FIELD_POSITION",
-                                   "RDB$FIELD_ID"]
+# RDB$RELATION_FIELDS — ОТКАЛИБРОВАНО на ASUSS.GDB (ODS 15.0, len=672):
+#   mask ULONG @0, FIELD_NAME c67 @0x04, RELATION_NAME c67 @0x47,
+#   FIELD_SOURCE c67 @0x8A, QUERY_NAME c67 @0xCD, BASE_FIELD c67 @0x110,
+#   EDIT_STRING vc125 @0x154, FIELD_POSITION @0x1D4, QUERY_HEADER blob @0x1D8,
+#   UPDATE_FLAG @0x1E0, FIELD_ID @0x1E2, VIEW_CONTEXT @0x1E4, SYSTEM_FLAG @0x1F8
+RDB_RELATION_FIELDS = SysFormat(
+    relation_id=REL_RELATION_FIELDS,
+    name="RDB$RELATION_FIELDS",
+    null_bytes=4,
+    fields=[
+        _f("RDB$FIELD_NAME", ods.DTYPE_TEXT, 0x04, NAME_LEN),
+        _f("RDB$RELATION_NAME", ods.DTYPE_TEXT, 0x47, NAME_LEN),
+        _f("RDB$FIELD_SOURCE", ods.DTYPE_TEXT, 0x8A, NAME_LEN),
+        _f("RDB$FIELD_POSITION", ods.DTYPE_SHORT, 0x1D4, 2),
+        _f("RDB$FIELD_ID", ods.DTYPE_SHORT, 0x1E2, 2),
+    ],
+)
 
-# RDB$FIELDS: RDB$FIELD_NAME, RDB$FIELD_TYPE, RDB$FIELD_SUB_TYPE,
-#   RDB$FIELD_
+# RDB$FIELDS — ОТКАЛИБРОВАНО на ASUSS.GDB (ODS 15.0, len=380):
+#   mask ULONG @0, FIELD_NAME c67 @0x04, QUERY_NAME c67 @0x47, блобы...,
+#   FIELD_LENGTH @0xBC, FIELD_SCALE @0xBE, FIELD_TYPE @0xC0,
+#   FIELD_SUB_TYPE @0xC2, CHARACTER_SET_ID @0x178
+RDB_FIELDS = SysFormat(
+    relation_id=REL_FIELDS,
+    name="RDB$FIELDS",
+    null_bytes=4,
+    fields=[
+        _f("RDB$FIELD_NAME", ods.DTYPE_TEXT, 0x04, NAME_LEN),
+        _f("RDB$FIELD_LENGTH", ods.DTYPE_SHORT, 0xBC, 2),
+        _f("RDB$FIELD_SCALE", ods.DTYPE_SHORT, 0xBE, 2),
+        _f("RDB$FIELD_TYPE", ods.DTYPE_SHORT, 0xC0, 2),
+        _f("RDB$FIELD_SUB_TYPE", ods.DTYPE_SHORT, 0xC2, 2),
+        _f("RDB$CHARACTER_SET_ID", ods.DTYPE_SHORT, 0x178, 2),
+    ],
+)

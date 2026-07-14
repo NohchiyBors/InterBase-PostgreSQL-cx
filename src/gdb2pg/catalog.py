@@ -26,8 +26,9 @@ class Column:
     length: int
     scale: int
     sub_type: int
+    field_id: int = 0
     charset_id: int | None = None
-    offset: int | None = None  # из RDB$FORMATS
+    offset: int | None = None  # вычислено по алгоритму выравнивания движка
     nullable: bool = True
 
     @property
@@ -100,6 +101,93 @@ def read_rdb_relations(pager: Pager,
     return out
 
 
+def _read_sysformat(pager: Pager, pointer_map: dict[int, list[int]],
+                    fmt) -> list[dict]:
+    if fmt.relation_id not in pointer_map:
+        return []
+    first = pointer_map[fmt.relation_id][0]
+    need = max(f.offset + f.length for f in fmt.fields)
+    out = []
+    for rec in records.walk_relation(pager, first, check_tx=False):
+        if len(rec.data) < need:
+            continue
+        out.append({f.name: types.decode_value(f.dtype, rec.data, f.offset,
+                                               f.length)
+                    for f in fmt.fields})
+    return out
+
+
+def compute_offsets(columns: list[Column], field_count: int) -> None:
+    """Раскладка данных записи по алгоритму движка.
+
+    Верифицировано на системных таблицах ASUSS.GDB: null-маска
+    ceil(n/8), выровненная до 4; поля в порядке FIELD_ID, каждое по
+    выравниванию своего типа (text/bool 1, short/varchar 2, прочие 4).
+    """
+    n = max(field_count, (max((c.field_id for c in columns), default=0) + 1))
+    off = ((n + 7) // 8 + 3) & ~3
+    for c in sorted(columns, key=lambda c: c.field_id):
+        a = types.dtype_align(c.dtype)
+        off = (off + a - 1) & ~(a - 1)
+        c.offset = off
+        off += types.dtype_storage(c.dtype, c.length)
+
+
+def load_columns(pager: Pager, schema: Schema,
+                 pointer_map: dict[int, list[int]]) -> None:
+    """Заполнить колонки таблиц из RDB$RELATION_FIELDS + RDB$FIELDS."""
+    domains = {}
+    for row in _read_sysformat(pager, pointer_map, sysformats.RDB_FIELDS):
+        domains[row["RDB$FIELD_NAME"]] = row
+    by_table: dict[str, list[Column]] = {}
+    for row in _read_sysformat(pager, pointer_map,
+                               sysformats.RDB_RELATION_FIELDS):
+        dom = domains.get(row["RDB$FIELD_SOURCE"])
+        if dom is None:
+            continue
+        ftype = dom["RDB$FIELD_TYPE"]
+        dtype = types.FIELD_TYPE_TO_DTYPE.get(ftype)
+        if dtype is None:
+            continue  # неизвестный тип: колонка пропускается без падения
+        by_table.setdefault(row["RDB$RELATION_NAME"], []).append(Column(
+            name=row["RDB$FIELD_NAME"],
+            position=row["RDB$FIELD_POSITION"],
+            dtype=dtype,
+            length=dom["RDB$FIELD_LENGTH"],
+            scale=dom["RDB$FIELD_SCALE"],
+            sub_type=dom["RDB$FIELD_SUB_TYPE"] or 0,
+            field_id=row["RDB$FIELD_ID"],
+            charset_id=dom["RDB$CHARACTER_SET_ID"],
+        ))
+    by_name = {t.name: t for t in schema.tables.values()}
+    for tname, cols in by_table.items():
+        t = by_name.get(tname)
+        if t is None:
+            continue
+        t.columns = sorted(cols, key=lambda c: c.position)
+        compute_offsets(t.columns, len(t.columns))
+
+
+def decode_row(table: Table, data: bytes, encoding: str = "cp1251") -> dict:
+    """Декодировать распакованную запись таблицы в dict по колонкам."""
+    row = {}
+    for c in table.columns:
+        fid = c.field_id
+        mask_byte = data[fid // 8] if fid // 8 < len(data) else 0xFF
+        if (mask_byte >> (fid % 8)) & 1:
+            row[c.name] = None
+            continue
+        if c.offset is None or c.offset + 1 > len(data):
+            row[c.name] = None
+            continue
+        try:
+            row[c.name] = types.decode_value(c.dtype, data, c.offset,
+                                             c.length, c.scale, encoding)
+        except Exception:
+            row[c.name] = "<decode error>"
+    return row
+
+
 def build_schema(pager: Pager, deep: bool = False) -> Schema:
     """Построить модель схемы (M1: карта отношений + имена таблиц)."""
     schema = Schema(ods=pager.header.ods, page_size=pager.page_size)
@@ -141,6 +229,13 @@ def build_schema(pager: Pager, deep: bool = False) -> Schema:
         )
 
     if deep:
-        schema.warnings.append("deep catalog (колонки из RDB$RELATION_FIELDS/"
-                               "RDB$FIELDS) — этап M2")
+        try:
+            load_columns(pager, schema, source)
+            missing = [t.name for t in schema.tables.values()
+                       if not t.is_system and not t.columns]
+            if missing:
+                schema.warnings.append(
+                    f"нет колонок у {len(missing)} таблиц: {missing[:5]}...")
+        except Exception as exc:
+            schema.warnings.append(f"load_columns failed: {exc}")
     return schema

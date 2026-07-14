@@ -89,10 +89,11 @@ def cmd_schema(args: argparse.Namespace) -> int:
             lines.append(f"> WARNING: {w}")
         if schema.warnings:
             lines.append("")
-        lines.append("| relation_id | name | pointer pages | system |")
-        lines.append("|---:|---|---:|---|")
+        lines.append("| relation_id | name | columns | pointer pages | system |")
+        lines.append("|---:|---|---:|---:|---|")
         for rel_id, t in sorted(schema.tables.items()):
-            lines.append(f"| {rel_id} | {t.name} | {len(t.pointer_pages)} "
+            lines.append(f"| {rel_id} | {t.name} | {len(t.columns)} "
+                         f"| {len(t.pointer_pages)} "
                          f"| {'yes' if t.is_system else ''} |")
         text = "\n".join(lines) + "\n"
         if args.report:
@@ -102,6 +103,41 @@ def cmd_schema(args: argparse.Namespace) -> int:
         else:
             print(text)
         return 2 if schema.warnings else 0
+
+
+def cmd_dump(args: argparse.Namespace) -> int:
+    """Пробная выгрузка строк таблицы (JSON lines)."""
+    import json
+
+    from . import catalog, records
+
+    with Pager(args.gdb) as p:
+        schema = catalog.build_schema(p, deep=True)
+        for w in schema.warnings:
+            print(f"WARNING: {w}", file=sys.stderr)
+        table = next((t for t in schema.tables.values()
+                      if t.name == args.table or t.pg_name == args.table), None)
+        if table is None:
+            print(f"таблица {args.table!r} не найдена", file=sys.stderr)
+            return 4
+        if not table.columns:
+            print(f"{table.name}: колонки не прочитаны", file=sys.stderr)
+            return 4
+        print(f"-- {table.name}: {len(table.columns)} колонок: "
+              + ", ".join(f"{c.name}({c.pg_type})" for c in table.columns),
+              file=sys.stderr)
+        st = records.WalkStats()
+        shown = 0
+        for rec in records.walk_relation(p, table.pointer_pages[0],
+                                         check_tx=not args.no_tx_check,
+                                         stats=st):
+            row = catalog.decode_row(table, rec.data)
+            print(json.dumps(row, ensure_ascii=False, default=str))
+            shown += 1
+            if args.limit and shown >= args.limit:
+                break
+        print(f"-- stats: {st}", file=sys.stderr)
+    return 0
 
 
 def cmd_convert(args: argparse.Namespace) -> int:
@@ -135,6 +171,13 @@ def main(argv: list[str] | None = None) -> int:
     p_s.add_argument("--report")
     p_s.add_argument("--deep", action="store_true")
     p_s.set_defaults(func=cmd_schema)
+
+    p_d = sub.add_parser("dump", help="пробная выгрузка строк таблицы (JSONL)")
+    p_d.add_argument("gdb")
+    p_d.add_argument("table")
+    p_d.add_argument("--limit", type=int, default=10)
+    p_d.add_argument("--no-tx-check", action="store_true")
+    p_d.set_defaults(func=cmd_dump)
 
     p_c = sub.add_parser("convert", help="перенос в PostgreSQL (M3)")
     p_c.add_argument("gdb")
