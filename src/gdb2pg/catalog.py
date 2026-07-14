@@ -41,6 +41,9 @@ class Table:
     relation_id: int
     name: str
     pointer_pages: list[int] = field(default_factory=list)
+    blob_pointer_pages: list[int] = field(default_factory=list)
+    data_blocking_factor: int | None = None
+    blob_blocking_factor: int | None = None
     columns: list[Column] = field(default_factory=list)
     is_system: bool = False
 
@@ -92,11 +95,20 @@ def read_rdb_relations(pager: Pager,
         vals = {f.name: types.decode_value(f.dtype, buf, f.offset, f.length)
                 for f in fmt.fields}
         rel_id = vals["RDB$RELATION_ID"]
+        data_factor = None
+        blob_factor = None
+        if len(buf) >= 0x268:
+            if not ((buf[17 // 8] >> (17 % 8)) & 1):
+                data_factor = types.decode_value(ods.DTYPE_SHORT, buf, 0x264, 2)
+            if not ((buf[18 // 8] >> (18 % 8)) & 1):
+                blob_factor = types.decode_value(ods.DTYPE_SHORT, buf, 0x266, 2)
         out[rel_id] = {
             "name": vals["RDB$RELATION_NAME"],
             "system": bool(vals["RDB$SYSTEM_FLAG"]),
             "format": vals["RDB$FORMAT"],
             "field_count": vals["RDB$FIELD_ID"],
+            "data_blocking_factor": data_factor,
+            "blob_blocking_factor": blob_factor,
         }
     return out
 
@@ -196,6 +208,7 @@ def build_schema(pager: Pager, deep: bool = False) -> Schema:
     schema = Schema(ods=pager.header.ods, page_size=pager.page_size)
 
     scan_map = records.find_pointer_pages(pager)
+    blob_map = records.find_blob_pointer_pages(pager)
 
     try:
         cat_map = read_rdb_pages(pager)
@@ -228,6 +241,9 @@ def build_schema(pager: Pager, deep: bool = False) -> Schema:
             relation_id=rel_id,
             name=info.get("name") or f"RELATION_{rel_id}",
             pointer_pages=pages,
+            blob_pointer_pages=blob_map.get(rel_id, []),
+            data_blocking_factor=info.get("data_blocking_factor"),
+            blob_blocking_factor=info.get("blob_blocking_factor"),
             is_system=info.get("system", rel_id <= 50),
         )
 

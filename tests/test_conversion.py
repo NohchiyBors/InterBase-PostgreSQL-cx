@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from gdb2pg import catalog, conversion, ddl, ods, writer
+from gdb2pg.manifest import Manifest, TableState
 
 
 def _column(name, position, dtype=ods.DTYPE_LONG, length=4):
@@ -86,10 +87,18 @@ class FakeWriter:
     def promote(self, table):
         self.calls.append(("promote", table))
 
+    def save_manifest(self, manifest, target_table=None):
+        statuses = tuple((name, state.status)
+                         for name, state in manifest.tables.items())
+        self.calls.append(("manifest", target_table, manifest.status, statuses))
+
 
 def _rows(_table, stats):
     stats.rows_read = 2
     stats.walk.back_versions = 3
+    stats.walk.bad_pages = 2
+    stats.walk.bad_page_numbers = [17]
+    stats.blobs_read = 4
     return iter([(1, 2), (3, 4)])
 
 
@@ -107,6 +116,8 @@ def test_execute_plan_and_resume(tmp_path):
     assert manifest.status == "done"
     assert manifest.tables["foo_bar"].rows_written == 2
     assert manifest.tables["foo_bar"].back_versions_skipped == 3
+    assert manifest.tables["foo_bar"].bad_page_numbers == [17]
+    assert manifest.tables["foo_bar"].blobs_read == 4
     assert ("promote", "foo_bar") in writer.calls
     assert not Path(str(manifest_path) + ".tmp").exists()
 
@@ -116,7 +127,9 @@ def test_execute_plan_and_resume(tmp_path):
         resume=True, row_provider=_rows,
     )
     assert manifest.status == "done"
-    assert resumed.calls == [("schema",)]
+    assert resumed.calls[0] == ("schema",)
+    assert resumed.calls[1][0:3] == ("manifest", None, "done")
+    assert resumed.calls[-1][0:3] == ("manifest", None, "done")
 
 
 def test_execute_plan_records_partial_failure(tmp_path):
@@ -185,3 +198,49 @@ def test_pg_writer_splits_copy_batches(monkeypatch):
     assert [len(batch) for batch in copy_batches] == [2, 2, 1]
     with pytest.raises(ValueError, match="batch_size must be positive"):
         writer.PgWriter("postgresql://test", "legacy_test", batch_size=0)
+
+
+def test_pg_writer_saves_manifest(monkeypatch):
+    import psycopg
+
+    calls = []
+
+    class FakeCursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, statement, params=None):
+            calls.append((statement, params))
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def cursor(self):
+            return FakeCursor()
+
+    monkeypatch.setattr(psycopg, "connect", lambda _dsn: FakeConnection())
+    manifest = Manifest("source.gdb", "legacy_test")
+    manifest.tables["foo"] = TableState(
+        relation_id=42,
+        name="FOO",
+        target_name="foo",
+        status="done",
+        rows_read=3,
+        rows_written=3,
+        bad_page_numbers=[9],
+        blobs_read=2,
+    )
+
+    writer.PgWriter("postgresql://test", "legacy_test").save_manifest(manifest)
+
+    assert len(calls) == 3
+    assert calls[1][1][0:3] == ("foo", "FOO", 42)
+    assert calls[1][1][11] == [9]
+    assert calls[1][1][14] == 2

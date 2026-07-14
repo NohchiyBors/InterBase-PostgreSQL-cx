@@ -11,9 +11,12 @@ InterBase-сервера и лицензий, разбирает on-disk structu
 
 - M1: header, страницы и каталог откалиброваны на ASUSS.GDB ODS 15.
 - M2: колонки и строки пользовательских таблиц декодируются.
-- M3 (в работе): реализованы conversion plan, staging DDL, COPY батчами,
-  фильтрация back-версий, локальный manifest/resume и отчёт. До завершения нужны live-проверка на
-  PostgreSQL и полном ASUSS.GDB, PostgreSQL-manifest и обработка BLOB.
+- M3: conversion plan, staging DDL, COPY батчами, фильтрация back-версий,
+  manifest/resume и отчёт; полный live-прогон ASUSS завершён.
+- M4: BLOB InterBase ODS 15, PostgreSQL manifest и точные bad-page номера;
+  `3811/3811` BLOB и `1152301` строк сверены с PostgreSQL.
+- Открыто: независимая relation-level сверка через лицензированный XE7
+  `gstat -r` и расширение набора реальных ODS-фикстур.
 
 Результат live-прогона ASUSS.GDB: [`docs/ASUSS_M3_VALIDATION.md`](docs/ASUSS_M3_VALIDATION.md).
 
@@ -65,6 +68,7 @@ src/gdb2pg/
   sysformats.py  # захардкоженные форматы системных таблиц (калибровка)
   catalog.py     # чтение RDB$-каталога -> модель схемы
   types.py       # декодирование значений, маппинг типов в PostgreSQL
+  blobs.py       # BLOB IDs, ODS 15 blob pointer/data pages, сегменты
   ddl.py         # генерация DDL
   writer.py      # COPY в PostgreSQL (psycopg3)
   manifest.py    # manifest / resume

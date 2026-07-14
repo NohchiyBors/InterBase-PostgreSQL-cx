@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from itertools import islice
+from typing import TYPE_CHECKING
 from typing import Iterable, Sequence
+
+if TYPE_CHECKING:
+    from .manifest import Manifest, TableState
 
 
 class PgWriter:
@@ -81,3 +86,101 @@ class PgWriter:
                     sql.Identifier(f"{table}__staging"),
                     sql.Identifier(table),
                 ))
+
+    def save_manifest(self, manifest: "Manifest",
+                      target_table: str | None = None) -> None:
+        """Синхронизировать локальный manifest с таблицей целевой схемы."""
+        import psycopg
+        from psycopg import sql
+
+        manifest_table = sql.Identifier("gdb2pg_manifest")
+        qualified = sql.SQL("{}.{}").format(sql.Identifier(self.schema), manifest_table)
+        create = sql.SQL("""
+            CREATE TABLE IF NOT EXISTS {} (
+                target_table text PRIMARY KEY,
+                source_table text NOT NULL,
+                relation_id integer NOT NULL,
+                source_path text NOT NULL,
+                run_status text NOT NULL,
+                table_status text NOT NULL,
+                started_at timestamptz NOT NULL,
+                finished_at timestamptz,
+                rows_read bigint NOT NULL,
+                rows_written bigint NOT NULL,
+                bad_pages bigint NOT NULL,
+                bad_page_numbers bigint[] NOT NULL,
+                back_versions_skipped bigint NOT NULL,
+                decode_errors bigint NOT NULL,
+                blobs_read bigint NOT NULL,
+                blobs_skipped bigint NOT NULL,
+                error text,
+                warnings text[] NOT NULL,
+                updated_at timestamptz NOT NULL DEFAULT clock_timestamp()
+            )
+        """).format(qualified)
+        upsert = sql.SQL("""
+            INSERT INTO {} (
+                target_table, source_table, relation_id, source_path,
+                run_status, table_status, started_at, finished_at,
+                rows_read, rows_written, bad_pages, bad_page_numbers,
+                back_versions_skipped, decode_errors, blobs_read, blobs_skipped,
+                error, warnings, updated_at
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, clock_timestamp()
+            )
+            ON CONFLICT (target_table) DO UPDATE SET
+                source_table = EXCLUDED.source_table,
+                relation_id = EXCLUDED.relation_id,
+                source_path = EXCLUDED.source_path,
+                run_status = EXCLUDED.run_status,
+                table_status = EXCLUDED.table_status,
+                started_at = EXCLUDED.started_at,
+                finished_at = EXCLUDED.finished_at,
+                rows_read = EXCLUDED.rows_read,
+                rows_written = EXCLUDED.rows_written,
+                bad_pages = EXCLUDED.bad_pages,
+                bad_page_numbers = EXCLUDED.bad_page_numbers,
+                back_versions_skipped = EXCLUDED.back_versions_skipped,
+                decode_errors = EXCLUDED.decode_errors,
+                blobs_read = EXCLUDED.blobs_read,
+                blobs_skipped = EXCLUDED.blobs_skipped,
+                error = EXCLUDED.error,
+                warnings = EXCLUDED.warnings,
+                updated_at = EXCLUDED.updated_at
+        """).format(qualified)
+
+        states = manifest.tables
+        if target_table is not None:
+            state = states.get(target_table)
+            states = {target_table: state} if state is not None else {}
+        started = datetime.fromtimestamp(manifest.started_at, tz=timezone.utc)
+        finished = (datetime.fromtimestamp(manifest.finished_at, tz=timezone.utc)
+                    if manifest.finished_at is not None else None)
+
+        with psycopg.connect(self.dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(create)
+                for state in states.values():
+                    cur.execute(upsert, self._manifest_row(
+                        manifest, state, started, finished
+                    ))
+                if target_table is None:
+                    cur.execute(
+                        sql.SQL("DELETE FROM {} WHERE NOT (target_table = ANY(%s))")
+                        .format(qualified),
+                        (list(manifest.tables),),
+                    )
+
+    @staticmethod
+    def _manifest_row(manifest: "Manifest", state: "TableState",
+                      started: datetime, finished: datetime | None) -> tuple:
+        return (
+            state.target_name, state.name, state.relation_id, manifest.gdb_path,
+            manifest.status, state.status, started, finished,
+            state.rows_read, state.rows_written, state.bad_pages,
+            state.bad_page_numbers, state.back_versions_skipped,
+            state.decode_errors, state.blobs_read, state.blobs_skipped,
+            state.error, manifest.warnings,
+        )

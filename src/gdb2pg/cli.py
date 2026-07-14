@@ -197,6 +197,7 @@ def cmd_convert(args: argparse.Namespace) -> int:
                 [*model.warnings, *manifest.warnings]
             ))
             manifest.save(manifest_path)
+            writer.save_manifest(manifest)
             if args.report:
                 report_path = Path(args.report)
                 report_path.parent.mkdir(parents=True, exist_ok=True)

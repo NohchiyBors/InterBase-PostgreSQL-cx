@@ -18,8 +18,10 @@ class TableState:
     rows_written: int = 0
     checkpoint_pointer_page: int | None = None
     bad_pages: int = 0
+    bad_page_numbers: list[int] = field(default_factory=list)
     back_versions_skipped: int = 0
     decode_errors: int = 0
+    blobs_read: int = 0
     blobs_skipped: int = 0
     error: str | None = None
 

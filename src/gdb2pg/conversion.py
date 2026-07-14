@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Protocol, Sequence
 
-from . import catalog, ddl, ods, records, types
+from . import blobs, catalog, ddl, ods, records, types
 from .manifest import Manifest, TableState
 
 
@@ -34,6 +34,7 @@ class ConversionPlan:
 class TableReadStats:
     rows_read: int = 0
     decode_errors: int = 0
+    blobs_read: int = 0
     blobs_skipped: int = 0
     walk: records.WalkStats = field(default_factory=records.WalkStats)
 
@@ -47,6 +48,9 @@ class ConversionWriter(Protocol):
                    rows: Iterable[Sequence]) -> int: ...
 
     def promote(self, table: str) -> None: ...
+
+    def save_manifest(self, manifest: Manifest,
+                      target_table: str | None = None) -> None: ...
 
 
 RowProvider = Callable[[PlannedTable, TableReadStats], Iterable[Sequence]]
@@ -91,7 +95,7 @@ def build_plan(schema: catalog.Schema, include: Sequence[str] = (),
         else:
             selected.append(table)
 
-    used_tables: set[str] = set()
+    used_tables: set[str] = {"gdb2pg_manifest"}
     planned: list[PlannedTable] = []
     for table in selected:
         # Reserve space for the __staging suffix under PostgreSQL's 63-byte limit.
@@ -128,6 +132,7 @@ def render_ddl(schema_name: str, plan: ConversionPlan) -> str:
 
 def iter_table_rows(pager, table: PlannedTable, stats: TableReadStats,
                     check_tx: bool = True, encoding: str = "cp1251"):
+    blob_reader = blobs.BlobReader(pager, table.source)
     for record in records.walk_relation(
         pager,
         table.source.pointer_pages[0],
@@ -143,9 +148,14 @@ def iter_table_rows(pager, table: PlannedTable, stats: TableReadStats,
         for column in table.columns:
             value = decoded.get(column.source.name)
             if column.source.dtype == ods.DTYPE_BLOB and value is not None:
-                # BlobReader is not calibrated yet; preserve the row and report NULL.
-                value = None
-                stats.blobs_skipped += 1
+                try:
+                    value = blob_reader.read(value)
+                    if column.source.sub_type == 1:
+                        value = value.decode(encoding, errors="replace")
+                    stats.blobs_read += 1
+                except blobs.BlobError:
+                    value = None
+                    stats.blobs_skipped += 1
             values.append(value)
         yield tuple(values)
 
@@ -176,7 +186,22 @@ def execute_plan(pager, gdb_path: str, schema_name: str, plan: ConversionPlan,
     else:
         manifest = _new_manifest(gdb_path, schema_name, plan)
 
+    def persist(target_table: str | None = None, sync_postgres: bool = True) -> None:
+        manifest.save(manifest_file)
+        if sync_postgres:
+            writer.save_manifest(manifest, target_table)
+
+    def update_state(state: TableState, read_stats: TableReadStats) -> None:
+        state.rows_read = read_stats.rows_read
+        state.bad_pages = read_stats.walk.bad_pages
+        state.bad_page_numbers = sorted(read_stats.walk.bad_page_numbers)
+        state.back_versions_skipped = read_stats.walk.back_versions
+        state.decode_errors = read_stats.decode_errors
+        state.blobs_read = read_stats.blobs_read
+        state.blobs_skipped = read_stats.blobs_skipped
+
     writer.ensure_schema()
+    persist()
     for table in plan.tables:
         state = manifest.tables.setdefault(
             table.target_name,
@@ -189,8 +214,14 @@ def execute_plan(pager, gdb_path: str, schema_name: str, plan: ConversionPlan,
         state.error = None
         state.rows_read = 0
         state.rows_written = 0
+        state.bad_pages = 0
+        state.bad_page_numbers = []
+        state.back_versions_skipped = 0
+        state.decode_errors = 0
+        state.blobs_read = 0
+        state.blobs_skipped = 0
         manifest.status = "running"
-        manifest.save(manifest_file)
+        persist(sync_postgres=False)
         read_stats = TableReadStats()
         try:
             writer.prepare_table(table.target_name,
@@ -202,12 +233,8 @@ def execute_plan(pager, gdb_path: str, schema_name: str, plan: ConversionPlan,
                 [column.target_name for column in table.columns],
                 rows,
             )
-            state.rows_read = read_stats.rows_read
+            update_state(state, read_stats)
             state.rows_written = written
-            state.bad_pages = read_stats.walk.bad_pages
-            state.back_versions_skipped = read_stats.walk.back_versions
-            state.decode_errors = read_stats.decode_errors
-            state.blobs_skipped = read_stats.blobs_skipped
             if written != read_stats.rows_read:
                 raise RuntimeError(
                     f"row count mismatch: read={read_stats.rows_read}, written={written}"
@@ -215,22 +242,18 @@ def execute_plan(pager, gdb_path: str, schema_name: str, plan: ConversionPlan,
             writer.promote(table.target_name)
             state.status = "done"
         except Exception as exc:
-            state.rows_read = read_stats.rows_read
-            state.bad_pages = read_stats.walk.bad_pages
-            state.back_versions_skipped = read_stats.walk.back_versions
-            state.decode_errors = read_stats.decode_errors
-            state.blobs_skipped = read_stats.blobs_skipped
+            update_state(state, read_stats)
             state.status = "failed"
             state.error = str(exc)
             manifest.status = "partial"
-            manifest.save(manifest_file)
             if strict:
+                persist(table.target_name)
                 raise
-        manifest.save(manifest_file)
+        persist(table.target_name)
 
     failed = any(state.status == "failed" for state in manifest.tables.values())
     manifest.finish("partial" if failed else "done")
-    manifest.save(manifest_file)
+    persist()
     return manifest
 
 
@@ -242,16 +265,19 @@ def render_report(manifest: Manifest) -> str:
         f"- PostgreSQL schema: `{manifest.schema}`",
         f"- Status: `{manifest.status}`",
         "",
-        "| source table | target table | status | read | written | bad pages | back versions | decode errors | blobs skipped |",
-        "|---|---|---|---:|---:|---:|---:|---:|---:|",
+        "| source table | target table | status | read | written | bad pages | back versions | decode errors | blobs read | blobs skipped |",
+        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for _, state in sorted(manifest.tables.items()):
         lines.append(
             f"| {state.name} | {state.target_name} | {state.status} | "
             f"{state.rows_read} | {state.rows_written} | {state.bad_pages} | "
             f"{state.back_versions_skipped} | {state.decode_errors} | "
-            f"{state.blobs_skipped} |"
+            f"{state.blobs_read} | {state.blobs_skipped} |"
         )
+        if state.bad_page_numbers:
+            pages = ", ".join(map(str, state.bad_page_numbers))
+            lines.append(f"\n> **{state.name} bad pages:** {pages}\n")
         if state.error:
             lines.append(f"\n> **{state.name}:** {state.error}\n")
     if manifest.warnings:
