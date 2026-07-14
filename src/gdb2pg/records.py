@@ -94,17 +94,53 @@ def walk_relation(pager: Pager, first_pointer_page: int,
                 if hdr.deleted:
                     st.deleted += 1
                     continue
-                if hdr.flags & ods.RHD_INCOMPLETE:
-                    st.incomplete += 1
-                    continue  # M2: сборка цепочки фрагментов
                 if check_tx:
                     state = pager.tx_state(hdr.transaction, tip_chain)
                     if state != ods.TX_COMMITTED:
                         st.versions_skipped += 1
                         continue
-                payload = rle.decompress(rec_buf[ods.RHD_SIZE:])
+                if hdr.flags & ods.RHD_INCOMPLETE:
+                    st.incomplete += 1
+                    payload = _assemble_fragmented(pager, rec_buf, st)
+                    if payload is None:
+                        continue
+                else:
+                    payload = rle.decompress(rec_buf[ods.RHD_SIZE:])
                 st.records += 1
                 yield RawRecord(page=dp_num, slot=slot_idx, header=hdr, data=payload)
+
+
+def _assemble_fragmented(pager: Pager, head_buf, st: WalkStats,
+                         max_fragments: int = 1024) -> bytes | None:
+    """Собрать фрагментированную запись: конкатенация сжатых кусков + RLE."""
+    import struct
+
+    parts = [bytes(head_buf[ods.RHDF_DATA_OFFSET:])]
+    f_page, f_line = struct.unpack_from(ods.RHDF_F_PAGE_FMT, head_buf,
+                                        ods.RHDF_F_PAGE_OFFSET)
+    for _ in range(max_fragments):
+        if not f_page:
+            break
+        try:
+            buf = pager.page(f_page)
+            if buf[0] != ods.PAG_DATA:
+                return None
+            dp = ods.DataPage.parse(buf)
+            slot = dp.slots[f_line]
+            frag = buf[slot.offset: slot.offset + slot.length]
+            fh = ods.RecordHeader.parse(frag)
+        except Exception:
+            return None
+        if not fh.is_fragment:
+            return None
+        if fh.flags & ods.RHD_INCOMPLETE:
+            parts.append(bytes(frag[ods.RHDF_DATA_OFFSET:]))
+            f_page, f_line = struct.unpack_from(ods.RHDF_F_PAGE_FMT, frag,
+                                                ods.RHDF_F_PAGE_OFFSET)
+        else:
+            parts.append(bytes(frag[ods.RHD_SIZE:]))
+            break
+    return rle.decompress(b"".join(parts))
 
 
 def find_pointer_pages(pager: Pager) -> dict[int, list[int]]:

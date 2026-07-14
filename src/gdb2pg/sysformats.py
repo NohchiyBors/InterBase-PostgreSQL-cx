@@ -33,7 +33,7 @@ REL_FORMATS = 8
 REL_CHARACTER_SETS = 28
 REL_COLLATIONS = 29
 
-NAME_LEN = 31  # длина метаданных-имён (CHAR(31)) в ODS >= 9; для ODS15 проверить (67 в IB7+ для некоторых полей? калибровка)
+NAME_LEN = 67  # CHAR(67): длина метаданных-имён в ODS 15 (подтверждено probe на ASUSS.GDB 2026-07-14; в IB6/ODS10 было 31)
 
 
 @dataclass
@@ -84,12 +84,23 @@ RDB_FORMATS = SysFormat(
     ],
 )
 
-# RDB$RELATIONS (интересующие поля; полный формат длиннее):
-#   RDB$RELATION_ID (short), RDB$RELATION_NAME (char 31), RDB$FORMAT (short)
-# Смещения зависят от полного формата -> КАЛИБРОВКА обязательна.
-# Для M1 достаточно имени и id: имя ищется probe-режимом по ASCII.
-RDB_RELATIONS_FIELDS_OF_INTEREST = ["RDB$RELATION_ID", "RDB$RELATION_NAME",
-                                    "RDB$FORMAT", "RDB$VIEW_BLR"]
+# RDB$RELATIONS — ОТКАЛИБРОВАНО на ASUSS.GDB (ODS 15.0, 2026-07-14, len=616):
+#   0x00 null mask (ULONG), 0x04 VIEW_BLR (blob id 8), 0x0C VIEW_SOURCE (8),
+#   0x14 DESCRIPTION (8), 0x1C RELATION_ID (short), 0x1E SYSTEM_FLAG (short),
+#   0x20 DBKEY_LENGTH (short, =8), 0x22 FORMAT (short), 0x24 FIELD_ID (short),
+#   0x26 RELATION_NAME (char 67), 0x69 SECURITY_CLASS (char 67), ...
+RDB_RELATIONS = SysFormat(
+    relation_id=REL_RELATIONS,
+    name="RDB$RELATIONS",
+    null_bytes=4,
+    fields=[
+        _f("RDB$RELATION_ID", ods.DTYPE_SHORT, 0x1C, 2),
+        _f("RDB$SYSTEM_FLAG", ods.DTYPE_SHORT, 0x1E, 2),
+        _f("RDB$FORMAT", ods.DTYPE_SHORT, 0x22, 2),
+        _f("RDB$FIELD_ID", ods.DTYPE_SHORT, 0x24, 2),
+        _f("RDB$RELATION_NAME", ods.DTYPE_TEXT, 0x26, NAME_LEN),
+    ],
+)
 
 # RDB$RELATION_FIELDS: RDB$FIELD_NAME, RDB$RELATION_NAME, RDB$FIELD_SOURCE,
 #   RDB$FIELD_POSITION, RDB$FIELD_ID ...
@@ -98,7 +109,4 @@ RDB_RELATION_FIELDS_OF_INTEREST = ["RDB$FIELD_NAME", "RDB$RELATION_NAME",
                                    "RDB$FIELD_ID"]
 
 # RDB$FIELDS: RDB$FIELD_NAME, RDB$FIELD_TYPE, RDB$FIELD_SUB_TYPE,
-#   RDB$FIELD_LENGTH, RDB$FIELD_SCALE, RDB$CHARACTER_SET_ID ...
-RDB_FIELDS_OF_INTEREST = ["RDB$FIELD_NAME", "RDB$FIELD_TYPE",
-                          "RDB$FIELD_SUB_TYPE", "RDB$FIELD_LENGTH",
-                          "RDB$FIELD_SCALE", "RDB$CHARACTER_SET_ID"]
+#   RDB$FIELD_

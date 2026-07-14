@@ -221,10 +221,14 @@ class DataPage:
 
 RHD_FMT = "<iiHHB"  # transaction, b_page, b_line, flags, format
 RHD_SIZE = struct.calcsize(RHD_FMT)  # 13
-# фрагментированная запись: + f_page (SLONG), f_line (USHORT).
-# Внимание: выравнивание f_page проверяется на реальном файле (13 vs 14/16).
-RHDF_EXTRA_FMT = "<iH"
-RHDF_EXTRA_OFFSET = RHD_SIZE + 1  # калибровка: +1 байт выравнивания (проверить probe)
+# Фрагментированная запись (rhdf) — ОТКАЛИБРОВАНО на ASUSS.GDB (ODS 15.0):
+#   головная запись (flags & RHD_INCOMPLETE): rhdf-заголовок:
+#     @16 f_page (SLONG), @20 f_line (USHORT), данные с @22 (@13..15 — padding);
+#   финальный фрагмент (flags == RHD_FRAGMENT): обычный rhd, данные с @13.
+# Полная запись = RLE-декомпрессия конкатенации сжатых кусков.
+RHDF_F_PAGE_FMT = "<iH"
+RHDF_F_PAGE_OFFSET = 16
+RHDF_DATA_OFFSET = 22
 
 # rhd_flags
 RHD_DELETED = 1
