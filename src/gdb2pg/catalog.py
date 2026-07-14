@@ -168,7 +168,8 @@ def load_columns(pager: Pager, schema: Schema,
         compute_offsets(t.columns, len(t.columns))
 
 
-def decode_row(table: Table, data: bytes, encoding: str = "cp1251") -> dict:
+def decode_row(table: Table, data: bytes, encoding: str = "cp1251",
+               errors: list[str] | None = None) -> dict:
     """Декодировать распакованную запись таблицы в dict по колонкам."""
     row = {}
     for c in table.columns:
@@ -183,8 +184,10 @@ def decode_row(table: Table, data: bytes, encoding: str = "cp1251") -> dict:
         try:
             row[c.name] = types.decode_value(c.dtype, data, c.offset,
                                              c.length, c.scale, encoding)
-        except Exception:
-            row[c.name] = "<decode error>"
+        except Exception as exc:
+            row[c.name] = None
+            if errors is not None:
+                errors.append(f"{c.name}: {exc}")
     return row
 
 

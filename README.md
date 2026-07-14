@@ -9,9 +9,11 @@ InterBase-сервера и лицензий, разбирает on-disk structu
 
 ## Статус
 
-M1 (в работе): чтение header page, перепись страниц, обход pointer/data
-pages, распаковка записей (RLE), каркас системного каталога.
-Формат ODS 11–15 калибруется на реальных файлах — см. `gdb2pg probe`.
+- M1: header, страницы и каталог откалиброваны на ASUSS.GDB ODS 15.
+- M2: колонки и строки пользовательских таблиц декодируются.
+- M3 (в работе): реализованы conversion plan, staging DDL, COPY батчами,
+  локальный manifest/resume и отчёт. До завершения нужны live-проверка на
+  PostgreSQL и полном ASUSS.GDB, PostgreSQL-manifest и обработка BLOB.
 
 ## Быстрый старт
 
@@ -30,7 +32,17 @@ gdb2pg probe /path/to/copy.gdb --pointer-page N --limit 5
 gdb2pg schema /path/to/copy.gdb --report out/schema.md
 
 # полный перенос (M3+)
-gdb2pg convert /path/to/copy.gdb --dsn postgresql://... --schema legacy_asuss
+gdb2pg convert /path/to/copy.gdb \
+  --dsn postgresql://... \
+  --schema legacy_asuss \
+  --manifest out/legacy_asuss.manifest.json \
+  --report out/legacy_asuss.md
+
+# безопасная проверка плана и DDL без подключения к PostgreSQL
+gdb2pg convert /path/to/copy.gdb \
+  --schema legacy_asuss \
+  --dry-run \
+  --ddl-out out/legacy_asuss.sql
 ```
 
 ## Принципы
