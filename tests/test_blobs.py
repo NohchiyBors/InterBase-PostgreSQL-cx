@@ -11,7 +11,7 @@ RELATION = 42
 class FakePager:
     def __init__(self, pages):
         self.pages = pages
-        self.page_size = PAGE_SIZE
+        self.page_size = len(next(iter(pages.values())))
         self.page_count = max(pages) + 1
 
     def page(self, number):
@@ -20,6 +20,12 @@ class FakePager:
 
 def _page(page_type, flags=0):
     buf = bytearray(PAGE_SIZE)
+    struct.pack_into(ods.PAG_FMT, buf, 0, page_type, flags, 0, 1, 0, 0)
+    return buf
+
+
+def _sized_page(page_type, page_size, flags=0):
+    buf = bytearray(page_size)
     struct.pack_into(ods.PAG_FMT, buf, 0, page_type, flags, 0, 1, 0, 0)
     return buf
 
@@ -100,6 +106,41 @@ def test_blob_id_decodes_40_bit_record_number():
     blob_id = blobs.BlobId.decode(value)
     assert blob_id.relation_id == RELATION
     assert blob_id.record_number == (7 << 32) | 123
+
+
+def test_uses_ods15_default_blob_factor_for_dedicated_pages():
+    page_size = 8192
+    assert ods.default_blob_blocking_factor(page_size) == 209
+
+    pointer = _sized_page(ods.PAG_BLOB_POINTER, page_size)
+    struct.pack_into(ods.PPG_FMT, pointer, ods.PAG_SIZE,
+                     0, 0, 2, RELATION, 0, 0)
+    struct.pack_into("<2i", pointer, ods.PPG_HEADER_SIZE, 2, 3)
+
+    pages = {1: pointer}
+    for page_number, sequence, value in ((2, 0, b"first"),
+                                         (3, 1, b"second")):
+        raw = (_header(flags=ods.RHD_BLOB | ods.RHD_STREAM_BLOB,
+                       length=len(value)) + value)
+        data = _sized_page(ods.PAG_BLOB_DATA, page_size)
+        struct.pack_into(ods.DPG_FMT, data, ods.PAG_SIZE,
+                         sequence, RELATION, 1)
+        offset = page_size - len(raw)
+        data[offset:] = raw
+        struct.pack_into(ods.DPG_REPEAT_FMT, data, ods.DPG_HEADER_SIZE,
+                         offset, len(raw))
+        pages[page_number] = data
+
+    table = catalog.Table(
+        relation_id=RELATION,
+        name="BLOBS",
+        blob_pointer_pages=[1],
+        blob_blocking_factor=None,
+    )
+
+    reader = blobs.BlobReader(FakePager(pages), table)
+    assert reader.read((RELATION, 0)) == b"first"
+    assert reader.read((RELATION, 209)) == b"second"
 
 
 def test_rejects_non_blob_record():

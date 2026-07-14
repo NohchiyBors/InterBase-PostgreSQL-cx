@@ -227,6 +227,18 @@ def max_records_per_data_page(page_size: int) -> int:
             (DPG_REPEAT_SIZE + RHD_SIZE))
 
 
+# ODS 15 выделяет отдельное пространство номеров для BLOB-заголовков. Размер
+# шага откалиброван по границам страниц в восстановленных InterBase XE/15 GDB:
+# для страницы 8192 байта следующая BLOB data page начинается с record #209.
+ODS15_BLOB_RECORD_NUMBER_BYTES = 39
+
+
+def default_blob_blocking_factor(page_size: int) -> int:
+    """Общебазовый BLOB blocking factor для выделенных страниц ODS 15."""
+    return ((page_size - DPG_HEADER_SIZE) //
+            ODS15_BLOB_RECORD_NUMBER_BYTES)
+
+
 # --- заголовок BLOB и blob page -----------------------------------------------
 
 # InterBase ODS 15: blh хранится прямо в слоте blob data page, без rhd.

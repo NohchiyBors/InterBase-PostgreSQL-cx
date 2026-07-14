@@ -56,13 +56,15 @@ class BlobReader:
         return self._decode_segments(header, encoded)
 
     def _read_header(self, record_number: int) -> tuple[ods.BlobHeader, bytes]:
-        factor = (self.table.blob_blocking_factor or
-                  ods.max_records_per_data_page(self.pager.page_size))
+        dedicated = bool(self.table.blob_pointer_pages)
+        default_factor = (ods.default_blob_blocking_factor(self.pager.page_size)
+                          if dedicated else
+                          ods.max_records_per_data_page(self.pager.page_size))
+        factor = self.table.blob_blocking_factor or default_factor
         if factor <= 0:
             raise BlobError(f"invalid BLOB blocking factor: {factor}")
         data_sequence, line = divmod(record_number, factor)
 
-        dedicated = bool(self.table.blob_pointer_pages)
         pointer_pages = (self.table.blob_pointer_pages if dedicated
                          else self.table.pointer_pages)
         data_page_number = self._data_page_number(pointer_pages, data_sequence)
