@@ -15,6 +15,8 @@ InterBase-сервера и лицензий, разбирает on-disk structu
   фильтрация back-версий, локальный manifest/resume и отчёт. До завершения нужны live-проверка на
   PostgreSQL и полном ASUSS.GDB, PostgreSQL-manifest и обработка BLOB.
 
+Результат live-прогона ASUSS.GDB: [`docs/ASUSS_M3_VALIDATION.md`](docs/ASUSS_M3_VALIDATION.md).
+
 ## Быстрый старт
 
 ```bash
