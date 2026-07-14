@@ -48,10 +48,16 @@ def build_mini_gdb(tmp_path):
     payload = rle.compress(bytes(row))
     rec = struct.pack(ods.RHD_FMT, 1, 0, 0, 0, 0) + payload
     rec_off = PAGE - len(rec) - (len(rec) % 4)
+    chain = struct.pack(ods.RHD_FMT, 1, 0, 0, ods.RHD_CHAIN, 0) + payload
+    chain_off = (rec_off - len(chain)) & ~3
     pages[4][rec_off: rec_off + len(rec)] = rec
-    struct.pack_into(ods.DPG_FMT, pages[4], ods.PAG_SIZE, 0, 0, 1)
+    pages[4][chain_off: chain_off + len(chain)] = chain
+    struct.pack_into(ods.DPG_FMT, pages[4], ods.PAG_SIZE, 0, 0, 2)
     struct.pack_into(ods.DPG_REPEAT_FMT, pages[4], ods.DPG_HEADER_SIZE,
                      rec_off, len(rec))
+    struct.pack_into(ods.DPG_REPEAT_FMT, pages[4],
+                     ods.DPG_HEADER_SIZE + ods.DPG_REPEAT_SIZE,
+                     chain_off, len(chain))
 
     path = tmp_path / "mini.gdb"
     path.write_bytes(b"".join(bytes(p) for p in pages))
@@ -79,6 +85,7 @@ def test_walk_relation_committed_tx(mini_gdb):
         recs = list(records.walk_relation(p, 3, check_tx=True, stats=st))
         assert len(recs) == 1
         assert st.records == 1
+        assert st.back_versions == 1
         assert recs[0].header.transaction == 1
 
 

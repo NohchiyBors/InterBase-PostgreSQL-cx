@@ -89,6 +89,7 @@ class FakeWriter:
 
 def _rows(_table, stats):
     stats.rows_read = 2
+    stats.walk.back_versions = 3
     return iter([(1, 2), (3, 4)])
 
 
@@ -105,6 +106,7 @@ def test_execute_plan_and_resume(tmp_path):
     )
     assert manifest.status == "done"
     assert manifest.tables["foo_bar"].rows_written == 2
+    assert manifest.tables["foo_bar"].back_versions_skipped == 3
     assert ("promote", "foo_bar") in writer.calls
     assert not Path(str(manifest_path) + ".tmp").exists()
 

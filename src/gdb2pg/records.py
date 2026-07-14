@@ -32,6 +32,7 @@ class WalkStats:
     blobs: int = 0
     fragments: int = 0
     incomplete: int = 0
+    back_versions: int = 0
     versions_skipped: int = 0  # не-committed транзакции
     records: int = 0
     bad_pages: int = 0
@@ -85,6 +86,9 @@ def walk_relation(pager: Pager, first_pointer_page: int,
                 if slot.length < ods.RHD_SIZE:
                     continue
                 hdr = ods.RecordHeader.parse(rec_buf)
+                if hdr.flags & ods.RHD_CHAIN:
+                    st.back_versions += 1
+                    continue
                 if hdr.is_blob:
                     st.blobs += 1
                     continue

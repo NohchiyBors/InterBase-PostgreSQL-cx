@@ -205,6 +205,7 @@ def execute_plan(pager, gdb_path: str, schema_name: str, plan: ConversionPlan,
             state.rows_read = read_stats.rows_read
             state.rows_written = written
             state.bad_pages = read_stats.walk.bad_pages
+            state.back_versions_skipped = read_stats.walk.back_versions
             state.decode_errors = read_stats.decode_errors
             state.blobs_skipped = read_stats.blobs_skipped
             if written != read_stats.rows_read:
@@ -216,6 +217,7 @@ def execute_plan(pager, gdb_path: str, schema_name: str, plan: ConversionPlan,
         except Exception as exc:
             state.rows_read = read_stats.rows_read
             state.bad_pages = read_stats.walk.bad_pages
+            state.back_versions_skipped = read_stats.walk.back_versions
             state.decode_errors = read_stats.decode_errors
             state.blobs_skipped = read_stats.blobs_skipped
             state.status = "failed"
@@ -240,14 +242,15 @@ def render_report(manifest: Manifest) -> str:
         f"- PostgreSQL schema: `{manifest.schema}`",
         f"- Status: `{manifest.status}`",
         "",
-        "| source table | target table | status | read | written | bad pages | decode errors | blobs skipped |",
-        "|---|---|---|---:|---:|---:|---:|---:|",
+        "| source table | target table | status | read | written | bad pages | back versions | decode errors | blobs skipped |",
+        "|---|---|---|---:|---:|---:|---:|---:|---:|",
     ]
     for _, state in sorted(manifest.tables.items()):
         lines.append(
             f"| {state.name} | {state.target_name} | {state.status} | "
             f"{state.rows_read} | {state.rows_written} | {state.bad_pages} | "
-            f"{state.decode_errors} | {state.blobs_skipped} |"
+            f"{state.back_versions_skipped} | {state.decode_errors} | "
+            f"{state.blobs_skipped} |"
         )
         if state.error:
             lines.append(f"\n> **{state.name}:** {state.error}\n")

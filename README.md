@@ -12,7 +12,7 @@ InterBase-сервера и лицензий, разбирает on-disk structu
 - M1: header, страницы и каталог откалиброваны на ASUSS.GDB ODS 15.
 - M2: колонки и строки пользовательских таблиц декодируются.
 - M3 (в работе): реализованы conversion plan, staging DDL, COPY батчами,
-  локальный manifest/resume и отчёт. До завершения нужны live-проверка на
+  фильтрация back-версий, локальный manifest/resume и отчёт. До завершения нужны live-проверка на
   PostgreSQL и полном ASUSS.GDB, PostgreSQL-manifest и обработка BLOB.
 
 ## Быстрый старт
