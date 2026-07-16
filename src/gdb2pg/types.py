@@ -94,40 +94,6 @@ def dtype_align(dtype: int) -> int:
 
 
 def dtype_storage(dtype: int, length: int) -> int:
-    if dtype == ods.DTYPE_TEXT or dtype == ods.DTYPE_CSTRING:
-        return length
-    if dtype == ods.DTYPE_VARYING:
-        return length + 2
-    if dtype == ods.DTYPE_SHORT:
-        return 2
-    if dtype == ods.DTYPE_BOOLEAN:
-        return 1
-    if dtype in (ods.DTYPE_LONG, ods.DTYPE_REAL, ods.DTYPE_SQL_DATE,
-                 ods.DTYPE_SQL_TIME):
-        return 4
-    return 8  # int64/double/quad/timestamp/blob id
-
-
-# --- каталожные карты (RDB$FIELD_TYPE -> dtype), выравнивание и размер хранения ---
-
-FIELD_TYPE_TO_DTYPE = {
-    7: ods.DTYPE_SHORT, 8: ods.DTYPE_LONG, 9: ods.DTYPE_QUAD,
-    10: ods.DTYPE_REAL, 11: ods.DTYPE_D_FLOAT, 12: ods.DTYPE_SQL_DATE,
-    13: ods.DTYPE_SQL_TIME, 14: ods.DTYPE_TEXT, 16: ods.DTYPE_INT64,
-    17: ods.DTYPE_BOOLEAN, 27: ods.DTYPE_DOUBLE, 35: ods.DTYPE_TIMESTAMP,
-    37: ods.DTYPE_VARYING, 40: ods.DTYPE_CSTRING, 261: ods.DTYPE_BLOB,
-}
-
-
-def dtype_align(dtype: int) -> int:
-    if dtype in (ods.DTYPE_TEXT, ods.DTYPE_CSTRING, ods.DTYPE_BOOLEAN):
-        return 1
-    if dtype in (ods.DTYPE_VARYING, ods.DTYPE_SHORT):
-        return 2
-    return 4  # long/real/date/time/int64/double/timestamp/quad/blob (x86 IB)
-
-
-def dtype_storage(dtype: int, length: int) -> int:
     if dtype in (ods.DTYPE_TEXT, ods.DTYPE_CSTRING):
         return length
     if dtype == ods.DTYPE_VARYING:

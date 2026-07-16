@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from . import __version__, ods
 from .pager import Pager
@@ -141,9 +142,78 @@ def cmd_dump(args: argparse.Namespace) -> int:
 
 
 def cmd_convert(args: argparse.Namespace) -> int:
-    print("convert: этап M3 — доступен после калибровки каталога (M1/M2). "
-          "Сейчас используйте inspect/probe/schema.", file=sys.stderr)
-    return 4
+    from . import catalog, conversion, ddl
+
+    try:
+        ddl.validate_pg_ident(args.schema)
+        if args.batch_size <= 0:
+            raise ValueError("--batch-size must be positive")
+        with Pager(args.gdb) as pager:
+            model = catalog.build_schema(pager, deep=True)
+            plan = conversion.build_plan(
+                model,
+                include=args.include,
+                exclude=args.exclude,
+                include_system=args.include_system,
+            )
+            if not plan.tables:
+                print("convert: no tables selected", file=sys.stderr)
+                return 4
+
+            ddl_text = conversion.render_ddl(args.schema, plan)
+            if args.ddl_out:
+                ddl_path = Path(args.ddl_out)
+                ddl_path.parent.mkdir(parents=True, exist_ok=True)
+                ddl_path.write_text(ddl_text, encoding="utf-8")
+                print(f"DDL -> {ddl_path}")
+
+            print(f"selected tables: {len(plan.tables)}; skipped: {len(plan.skipped)}")
+            if args.dry_run:
+                if not args.ddl_out:
+                    print(ddl_text)
+                return 2 if model.warnings else 0
+            if not args.dsn:
+                print("convert: --dsn is required unless --dry-run is used",
+                      file=sys.stderr)
+                return 4
+
+            from .writer import PgWriter
+
+            writer = PgWriter(args.dsn, args.schema, args.batch_size)
+            manifest_path = args.manifest or f"{args.schema}.gdb2pg-manifest.json"
+            manifest = conversion.execute_plan(
+                pager,
+                args.gdb,
+                args.schema,
+                plan,
+                writer,
+                manifest_path,
+                resume=args.resume,
+                strict=args.strict,
+                check_tx=not args.no_tx_check,
+                encoding=args.default_charset,
+            )
+            manifest.warnings = list(dict.fromkeys(
+                [*model.warnings, *manifest.warnings]
+            ))
+            manifest.save(manifest_path)
+            writer.save_manifest(manifest)
+            if args.report:
+                report_path = Path(args.report)
+                report_path.parent.mkdir(parents=True, exist_ok=True)
+                report_path.write_text(conversion.render_report(manifest),
+                                       encoding="utf-8")
+                print(f"report -> {report_path}")
+            if manifest.status == "partial":
+                return 3
+            has_warnings = bool(manifest.warnings) or any(
+                state.bad_pages or state.decode_errors or state.blobs_skipped
+                for state in manifest.tables.values()
+            )
+            return 2 if has_warnings else 0
+    except Exception as exc:
+        print(f"convert failed: {exc}", file=sys.stderr)
+        return 4
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -182,7 +252,19 @@ def main(argv: list[str] | None = None) -> int:
     p_c = sub.add_parser("convert", help="перенос в PostgreSQL (M3)")
     p_c.add_argument("gdb")
     p_c.add_argument("--dsn")
-    p_c.add_argument("--schema")
+    p_c.add_argument("--schema", required=True)
+    p_c.add_argument("--batch-size", type=int, default=10_000)
+    p_c.add_argument("--manifest")
+    p_c.add_argument("--report")
+    p_c.add_argument("--ddl-out")
+    p_c.add_argument("--include", action="append", default=[])
+    p_c.add_argument("--exclude", action="append", default=[])
+    p_c.add_argument("--include-system", action="store_true")
+    p_c.add_argument("--default-charset", default="cp1251")
+    p_c.add_argument("--resume", action="store_true")
+    p_c.add_argument("--strict", action="store_true")
+    p_c.add_argument("--no-tx-check", action="store_true")
+    p_c.add_argument("--dry-run", action="store_true")
     p_c.set_defaults(func=cmd_convert)
 
     args = ap.parse_args(argv)

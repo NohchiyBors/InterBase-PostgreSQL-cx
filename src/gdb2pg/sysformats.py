@@ -88,6 +88,7 @@ RDB_FORMATS = SysFormat(
 #   0x00 null mask (ULONG), 0x04 VIEW_BLR (blob id 8), 0x0C VIEW_SOURCE (8),
 #   0x14 DESCRIPTION (8), 0x1C RELATION_ID (short), 0x1E SYSTEM_FLAG (short),
 #   0x20 DBKEY_LENGTH (short, =8), 0x22 FORMAT (short), 0x24 FIELD_ID (short),
+#   0x264 DATA_BLOCKING_FACTOR, 0x266 BLOB_BLOCKING_FACTOR (ODS 15)
 #   0x26 RELATION_NAME (char 67), 0x69 SECURITY_CLASS (char 67), ...
 RDB_RELATIONS = SysFormat(
     relation_id=REL_RELATIONS,

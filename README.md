@@ -9,9 +9,16 @@ InterBase-сервера и лицензий, разбирает on-disk structu
 
 ## Статус
 
-M1 (в работе): чтение header page, перепись страниц, обход pointer/data
-pages, распаковка записей (RLE), каркас системного каталога.
-Формат ODS 11–15 калибруется на реальных файлах — см. `gdb2pg probe`.
+- M1: header, страницы и каталог откалиброваны на ASUSS.GDB ODS 15.
+- M2: колонки и строки пользовательских таблиц декодируются.
+- M3: conversion plan, staging DDL, COPY батчами, фильтрация back-версий,
+  manifest/resume и отчёт; полный live-прогон ASUSS завершён.
+- M4: BLOB InterBase ODS 15, PostgreSQL manifest и точные bad-page номера;
+  `3811/3811` BLOB и `1152301` строк сверены с PostgreSQL.
+- Открыто: независимая relation-level сверка через лицензированный XE7
+  `gstat -r` и расширение набора реальных ODS-фикстур.
+
+Результат live-прогона ASUSS.GDB: [`docs/ASUSS_M3_VALIDATION.md`](docs/ASUSS_M3_VALIDATION.md).
 
 ## Быстрый старт
 
@@ -30,7 +37,17 @@ gdb2pg probe /path/to/copy.gdb --pointer-page N --limit 5
 gdb2pg schema /path/to/copy.gdb --report out/schema.md
 
 # полный перенос (M3+)
-gdb2pg convert /path/to/copy.gdb --dsn postgresql://... --schema legacy_asuss
+gdb2pg convert /path/to/copy.gdb \
+  --dsn postgresql://... \
+  --schema legacy_asuss \
+  --manifest out/legacy_asuss.manifest.json \
+  --report out/legacy_asuss.md
+
+# безопасная проверка плана и DDL без подключения к PostgreSQL
+gdb2pg convert /path/to/copy.gdb \
+  --schema legacy_asuss \
+  --dry-run \
+  --ddl-out out/legacy_asuss.sql
 ```
 
 ## Принципы
@@ -51,6 +68,7 @@ src/gdb2pg/
   sysformats.py  # захардкоженные форматы системных таблиц (калибровка)
   catalog.py     # чтение RDB$-каталога -> модель схемы
   types.py       # декодирование значений, маппинг типов в PostgreSQL
+  blobs.py       # BLOB IDs, ODS 15 blob pointer/data pages, сегменты
   ddl.py         # генерация DDL
   writer.py      # COPY в PostgreSQL (psycopg3)
   manifest.py    # manifest / resume

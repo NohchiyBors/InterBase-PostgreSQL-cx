@@ -8,7 +8,7 @@ M1: выдаём распакованные (RLE) байты primary-верси�
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterator
 
 from . import ods, rle
@@ -32,9 +32,17 @@ class WalkStats:
     blobs: int = 0
     fragments: int = 0
     incomplete: int = 0
+    back_versions: int = 0
     versions_skipped: int = 0  # не-committed транзакции
     records: int = 0
     bad_pages: int = 0
+    bad_page_numbers: list[int] = field(default_factory=list)
+
+
+def _record_bad_page(stats: WalkStats, page_number: int) -> None:
+    stats.bad_pages += 1
+    if page_number not in stats.bad_page_numbers:
+        stats.bad_page_numbers.append(page_number)
 
 
 def pointer_chain(pager: Pager, first_pointer_page: int) -> Iterator[ods.PointerPage]:
@@ -66,11 +74,11 @@ def walk_relation(pager: Pager, first_pointer_page: int,
             try:
                 buf = pager.page(dp_num)
                 if buf[0] != ods.PAG_DATA:
-                    st.bad_pages += 1
+                    _record_bad_page(st, dp_num)
                     continue
                 dp = ods.DataPage.parse(buf)
             except Exception:
-                st.bad_pages += 1
+                _record_bad_page(st, dp_num)
                 continue
             st.data_pages += 1
             for slot_idx, slot in enumerate(dp.slots):
@@ -79,12 +87,15 @@ def walk_relation(pager: Pager, first_pointer_page: int,
                     st.empty_slots += 1
                     continue
                 if slot.offset + slot.length > pager.page_size:
-                    st.bad_pages += 1
+                    _record_bad_page(st, dp_num)
                     continue
                 rec_buf = buf[slot.offset: slot.offset + slot.length]
                 if slot.length < ods.RHD_SIZE:
                     continue
                 hdr = ods.RecordHeader.parse(rec_buf)
+                if hdr.flags & ods.RHD_CHAIN:
+                    st.back_versions += 1
+                    continue
                 if hdr.is_blob:
                     st.blobs += 1
                     continue
@@ -124,12 +135,14 @@ def _assemble_fragmented(pager: Pager, head_buf, st: WalkStats,
         try:
             buf = pager.page(f_page)
             if buf[0] != ods.PAG_DATA:
+                _record_bad_page(st, f_page)
                 return None
             dp = ods.DataPage.parse(buf)
             slot = dp.slots[f_line]
             frag = buf[slot.offset: slot.offset + slot.length]
             fh = ods.RecordHeader.parse(frag)
         except Exception:
+            _record_bad_page(st, f_page)
             return None
         if not fh.is_fragment:
             return None
@@ -152,6 +165,20 @@ def find_pointer_pages(pager: Pager) -> dict[int, list[int]]:
     rel_pages: dict[int, list[tuple[int, int]]] = {}
     for n in range(pager.page_count):
         if pager.page_type(n) != ods.PAG_POINTER:
+            continue
+        try:
+            pp = ods.PointerPage.parse(pager.page(n))
+        except Exception:
+            continue
+        rel_pages.setdefault(pp.relation, []).append((pp.sequence, n))
+    return {rel: [pg for _, pg in sorted(v)] for rel, v in rel_pages.items()}
+
+
+def find_blob_pointer_pages(pager: Pager) -> dict[int, list[int]]:
+    """Линейный скан отдельных BLOB pointer pages InterBase ODS 15+."""
+    rel_pages: dict[int, list[tuple[int, int]]] = {}
+    for n in range(pager.page_count):
+        if pager.page_type(n) != ods.PAG_BLOB_POINTER:
             continue
         try:
             pp = ods.PointerPage.parse(pager.page(n))

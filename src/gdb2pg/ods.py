@@ -25,6 +25,8 @@ PAG_INDEX = 7         # index (b-tree) page
 PAG_BLOB = 8          # blob page
 PAG_IDS = 9           # generator page
 PAG_LOG = 10          # write-ahead log info
+PAG_BLOB_POINTER = 11 # отдельная pointer page BLOB (InterBase ODS 15+)
+PAG_BLOB_DATA = 12    # data page заголовков BLOB (InterBase ODS 15+)
 
 PAGE_TYPE_NAMES = {
     PAG_UNDEFINED: "undefined",
@@ -38,6 +40,8 @@ PAGE_TYPE_NAMES = {
     PAG_BLOB: "blob",
     PAG_IDS: "generators",
     PAG_LOG: "log_info",
+    PAG_BLOB_POINTER: "blob_pointer",
+    PAG_BLOB_DATA: "blob_data",
 }
 
 # --- базовый заголовок каждой страницы (struct pag, 16 байт в ODS 10) --------
@@ -215,6 +219,73 @@ class DataPage:
             off, ln = struct.unpack_from(DPG_REPEAT_FMT, buf, DPG_HEADER_SIZE + i * DPG_REPEAT_SIZE)
             slots.append(DataPageSlot(off, ln))
         return cls(pag=pag, sequence=seq, relation=relation, count=count, slots=slots)
+
+
+def max_records_per_data_page(page_size: int) -> int:
+    """Общебазовый blocking factor до появления table-specific ODS 15."""
+    return ((page_size - (DPG_HEADER_SIZE + DPG_REPEAT_SIZE)) //
+            (DPG_REPEAT_SIZE + RHD_SIZE))
+
+
+# ODS 15 выделяет отдельное пространство номеров для BLOB-заголовков. Размер
+# шага откалиброван по границам страниц в восстановленных InterBase XE/15 GDB:
+# для страницы 8192 байта следующая BLOB data page начинается с record #209.
+ODS15_BLOB_RECORD_NUMBER_BYTES = 39
+
+
+def default_blob_blocking_factor(page_size: int) -> int:
+    """Общебазовый BLOB blocking factor для выделенных страниц ODS 15."""
+    return ((page_size - DPG_HEADER_SIZE) //
+            ODS15_BLOB_RECORD_NUMBER_BYTES)
+
+
+# --- заголовок BLOB и blob page -----------------------------------------------
+
+# InterBase ODS 15: blh хранится прямо в слоте blob data page, без rhd.
+# Поле reserved @12 подтверждено на ASUSS.GDB; count/length находятся @16/@20.
+BLH_FMT = "<IIHHIIIHBB"
+BLH_SIZE = struct.calcsize(BLH_FMT)  # 28; далее inline data или ULONG pages[]
+
+
+@dataclass
+class BlobHeader:
+    lead_page: int
+    max_sequence: int
+    max_segment: int
+    flags: int
+    reserved: int
+    count: int
+    length: int
+    sub_type: int
+    charset: int
+    level: int
+
+    @classmethod
+    def parse(cls, buf: bytes) -> "BlobHeader":
+        if len(buf) < BLH_SIZE:
+            raise ValueError(f"short BLOB header: {len(buf)} < {BLH_SIZE}")
+        return cls(*struct.unpack_from(BLH_FMT, buf, 0))
+
+
+BLP_FMT = "<IIHH"  # lead_page, sequence, payload length, padding
+BLP_HEADER_SIZE = PAG_SIZE + struct.calcsize(BLP_FMT)  # 28
+BLP_POINTERS = 0x01
+
+
+@dataclass
+class BlobPage:
+    pag: PageHeader
+    lead_page: int
+    sequence: int
+    length: int
+
+    @classmethod
+    def parse(cls, buf: bytes) -> "BlobPage":
+        pag = PageHeader.parse(buf)
+        lead, sequence, length, _pad = struct.unpack_from(BLP_FMT, buf, PAG_SIZE)
+        if length > len(buf) - BLP_HEADER_SIZE:
+            raise ValueError(f"invalid BLOB page payload length: {length}")
+        return cls(pag=pag, lead_page=lead, sequence=sequence, length=length)
 
 
 # --- заголовок записи (rhd / rhdf, ODS 10) -------------------------------------
